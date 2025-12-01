@@ -1,78 +1,85 @@
-from flask import Flask, request
+# 这是一个完整的Flask服务，包含UDP心跳维持系统status
 import socket
 import threading
 import time
 import sys
+from flask import Flask
 
-# --------------------------------------------------
-# UDP心跳配置 (必须与sys-mgt-service系统配置一致)
-# --------------------------------------------------
-UDP_HOST = "127.0.0.1"
-UDP_PORT = 53500  # 必须和系统constants.py中的SOCK_PORT一致
-HEARTBEAT_INTERVAL = 2  # 心跳间隔(秒)，建议2-5秒
+# ------------------------------
+# 配置信息
+# ------------------------------
+FLASK_PORT = 5000
+UDP_SERVER = ('127.0.0.1', 53500)
+HEARTBEAT_INTERVAL = 2  # 秒
 
-# --------------------------------------------------
-# UDP心跳核心实现
-# --------------------------------------------------
-def _send_heartbeat(label):
-    """UDP心跳发送线程函数"""
+
+# ------------------------------
+# 核心功能：UDP心跳维持系统status
+# ------------------------------
+def _start_heartbeat(instance_id):
+    """启动UDP心跳线程，维持系统中的Running状态"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    target = (UDP_HOST, UDP_PORT)
 
     while True:
         try:
-            sock.sendto(label.encode("utf-8"), target)
+            sock.sendto(str(instance_id).encode('utf-8'), UDP_SERVER)
             time.sleep(HEARTBEAT_INTERVAL)
-        except Exception as e:
-            # 心跳发送失败时的简单处理，继续尝试
-            time.sleep(HEARTBEAT_INTERVAL)
-
-def start_heartbeat(label):
-    """启动UDP心跳线程"""
-    t = threading.Thread(target=_send_heartbeat, args=(label,), daemon=True)
-    t.start()
-    return t
+        except Exception:
+            time.sleep(HEARTBEAT_INTERVAL)  # 发送失败重试
 
 
+def start_heartbeat(instance_id):
+    """将心跳线程设置为daemon，自动随主进程退出"""
+    heartbeat_t = threading.Thread(target=_start_heartbeat, args=(instance_id,), daemon=True)
+    heartbeat_t.start()
+    return heartbeat_t
 
+
+# ------------------------------
+# Flask业务逻辑
+# ------------------------------
 app = Flask(__name__)
 
-@app.route('/demo/echo', methods=['GET', 'POST'])
-def echo():
-    if request.method == 'POST':
-        data = request.get_json()
-        return data
-    elif request.method == 'GET':
-        data = request.args
-        return data
 
-def main():
-    app.run(port=8080)
-
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("ERROR: 缺少系统传递的instance_label参数")
-        print("系统会自动将label参数传递给服务进程，无需手动设置")
-        sys.exit(1)
-
-    instance_label = sys.argv[1]
-          # 特殊处理：如果系统传递的是JSON格式的参数，解析出label
-    try:
-        import json
-        params = json.loads(instance_label)
-        instance_label = params["label"]
-    except:
-        # 否则直接使用参数作为label
-        pass
-    print(f"[Heartbeat] 服务Label: {instance_label}")
-
-    # ------------------------
-    # 2. 启动UDP心跳
-    # ------------------------
-    start_heartbeat(instance_label)
-    print(f"[Heartbeat] UDP心跳已启动 (间隔: {HEARTBEAT_INTERVAL}秒, 目标: {UDP_HOST}:{UDP_PORT})")
+@app.route('/')
+def index():
+    return "Flask服务运行中，UDP心跳已启动"
 
 
+@app.route('/api/test')
+def api_test():
+    return {"message": "Hello from Flask", "status": "ok"}
 
 
-    main()
+# ------------------------------
+# 启动程序
+# ------------------------------
+if __name__ == "__main__":
+    # -------------
+    # 自动获取或设置instance_id
+    # -------------
+    # 方案1: 从系统参数获取 (系统启动时)
+    instance_id = "207"  # 默认值
+
+    if len(sys.argv) > 1:
+        try:
+            import json
+
+            params = json.loads(sys.argv[1])
+            instance_id = params.get("instance_id") or instance_id
+            print(f"系统自动传入 Instance ID: {instance_id}")
+        except:
+            instance_id = sys.argv[1]
+            print(f"手动传入 Instance ID: {instance_id}")
+
+    # -------------
+    # 启动UDP心跳
+    # -------------
+    start_heartbeat(instance_id)
+    print(f"UDP心跳已启动: 目标={UDP_SERVER}, 间隔={HEARTBEAT_INTERVAL}秒")
+
+    # -------------
+    # 启动Flask服务
+    # -------------
+    print(f"Flask服务启动: http://localhost:{FLASK_PORT}")
+    app.run(host='0.0.0.0', port=FLASK_PORT)
